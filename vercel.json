@@ -1,0 +1,32 @@
+{
+  "builds": [
+    {
+      "src": "api/generate_posts.py",
+      "use": "@vercel/python"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/api/generate-posts",
+      "dest": "/api/generate_posts.py"
+    },
+    {
+      "src": "/api/get-pending-posts",
+      "dest": "/api/generate_posts.py"
+    },
+    {
+      "src": "/api/docs",
+      "dest": "/api/generate_posts.py"
+    },
+    {
+      "src": "/api/openapi.json",
+      "dest": "/api/generate_posts.py"
+    }
+  ],
+  "crons": [
+    {
+      "path": "/api/generate-posts",
+      "schedule": "0 8 * * *"
+    }
+  ]
+}

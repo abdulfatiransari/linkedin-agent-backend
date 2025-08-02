@@ -1,0 +1,5 @@
+*** Installation Command ***
+pip install -r requirements.txt
+
+*** Run Command ***
+uvicorn api.generate_posts:app --reload
