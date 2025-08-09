@@ -18,6 +18,9 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
+LINKEDIN_CLIENT_ID = os.getenv("LINKEDIN_CLIENT_ID")
+LINKEDIN_CLIENT_SECRET = os.getenv("LINKEDIN_CLIENT_SECRET")
+
 # Configuration
 CONFIG = {
     'huggingface_api_key': os.getenv('HUGGINGFACE_API_KEY'),
@@ -251,3 +254,34 @@ async def upload_post(
         "post_id": result['post_id'],
         "original_post": post
     }
+    
+@app.post("/linkedin/token")
+async def get_linkedin_access_token():
+    """Fetch LinkedIn access token using client credentials flow"""
+    if not LINKEDIN_CLIENT_ID or not LINKEDIN_CLIENT_SECRET:
+        logger.error("LinkedIn client ID or secret not configured.")
+        raise HTTPException(status_code=500, detail="LinkedIn credentials not configured.")
+
+    url = "https://www.linkedin.com/oauth/v2/accessToken"
+    headers = {'Content-Type': 'application/x-www-form-urlencoded'}
+    data = {
+        'grant_type': 'client_credentials',
+        'client_id': LINKEDIN_CLIENT_ID,
+        'client_secret': LINKEDIN_CLIENT_SECRET
+    }
+
+    try:
+        response = requests.post(url, headers=headers, data=data)
+        response.raise_for_status()
+        token_data = response.json()
+        logger.info("Successfully fetched LinkedIn access token.")
+        return {
+            "access_token": token_data.get("access_token"),
+            "expires_in": token_data.get("expires_in")
+        }
+    except requests.exceptions.HTTPError as e:
+        logger.error(f"LinkedIn token fetch error: {e.response.status_code} - {e.response.text}")
+        raise HTTPException(status_code=e.response.status_code, detail=f"LinkedIn API error: {e.response.text}")
+    except Exception as e:
+        logger.error(f"Unexpected error while fetching LinkedIn token: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
