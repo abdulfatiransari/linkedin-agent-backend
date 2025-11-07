@@ -1,7 +1,8 @@
 import json
 import random
 import os
-from fastapi import FastAPI, HTTPException, Body
+from fastapi import FastAPI, HTTPException, Body, Request
+from fastapi.responses import RedirectResponse
 from typing import List, Dict
 import uuid
 from datetime import datetime
@@ -9,51 +10,66 @@ import requests
 import logging
 from pathlib import Path
 from dotenv import load_dotenv
+from urllib.parse import urlencode
 
 load_dotenv()
 
 # Setup logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+)
 logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
 LINKEDIN_CLIENT_ID = os.getenv("LINKEDIN_CLIENT_ID")
 LINKEDIN_CLIENT_SECRET = os.getenv("LINKEDIN_CLIENT_SECRET")
+LINKEDIN_REDIRECT_URI = os.getenv(
+    "LINKEDIN_REDIRECT_URI"
+)  # e.g., http://localhost:8000/linkedin/callback
 
 # Configuration
 CONFIG = {
-    'huggingface_api_key': os.getenv('HUGGINGFACE_API_KEY'),
-    'post_count_per_day': 4,
-    'content_topics': [
-        'Emerging Technologies', 'Industry Trends', 'Product Innovation',
-        'Software Engineering', 'AI Developments'
+    "huggingface_api_key": os.getenv("HUGGINGFACE_API_KEY"),
+    "post_count_per_day": 4,
+    "content_topics": [
+        "Emerging Technologies",
+        "Industry Trends",
+        "Product Innovation",
+        "Software Engineering",
+        "AI Developments",
     ],
-    'post_templates': [
+    "post_templates": [
         "Sharing insights on {topic}: {content} This advancement is shaping the future of technology. #Tech #Innovation",
         "The latest in {topic}: {content} This development highlights the potential for growth in the industry. #Technology #Future",
         "A deep dive into {topic}: {content} This trend is driving significant progress. #TechTrends #Innovation",
         "Exploring advancements in {topic}: {content} These innovations are redefining the landscape. #SoftwareEngineering #Tech",
-        "{topic} continues to evolve: {content} This progress underscores the impact of technology on our world. #AI #Innovation"
+        "{topic} continues to evolve: {content} This progress underscores the impact of technology on our world. #AI #Innovation",
     ],
-    'output_dir': '/tmp/pending_posts',
-    'manual_review': True  # Set to False for Zapier/IFTTT auto-posting
+    "output_dir": "/tmp/pending_posts",
+    "manual_review": True,  # Set to False for Zapier/IFTTT auto-posting
 }
+
 
 # Ensure output directory exists
 def ensure_output_dir():
-    os.makedirs(CONFIG['output_dir'], exist_ok=True)
+    os.makedirs(CONFIG["output_dir"], exist_ok=True)
 
-def generate_content_with_huggingface(topic: str, model: str = "google/flan-t5-large") -> str:
+
+def generate_content_with_huggingface(
+    topic: str, model: str = "google/flan-t5-large"
+) -> str:
     """Generate content using Hugging Face Inference API with fallback."""
-    if not CONFIG['huggingface_api_key']:
+    if not CONFIG["huggingface_api_key"]:
         logger.error("HUGGINGFACE_API_KEY is not set.")
-        raise HTTPException(status_code=500, detail="HUGGINGFACE_API_KEY is not configured.")
-    
+        raise HTTPException(
+            status_code=500, detail="HUGGINGFACE_API_KEY is not configured."
+        )
+
     try:
         headers = {
-            'Authorization': f'Bearer {CONFIG["huggingface_api_key"]}',
-            'Content-Type': 'application/json'
+            "Authorization": f'Bearer {CONFIG["huggingface_api_key"]}',
+            "Content-Type": "application/json",
         }
         prompt = (
             f"Write a detailed, professional LinkedIn post (300-500 words) about {topic}. "
@@ -62,17 +78,17 @@ def generate_content_with_huggingface(topic: str, model: str = "google/flan-t5-l
             "or calls-to-action. Include relevant statistics, trends, or real-world applications to enhance depth."
         )
         payload = {
-            'inputs': prompt,
-            'parameters': {'min_length': 300, 'max_length': 512, 'temperature': 0.7}
+            "inputs": prompt,
+            "parameters": {"min_length": 300, "max_length": 512, "temperature": 0.7},
         }
         response = requests.post(
-            f'https://api-inference.huggingface.co/models/{model}',
+            f"https://api-inference.huggingface.co/models/{model}",
             json=payload,
-            headers=headers
+            headers=headers,
         )
         response.raise_for_status()
-        generated_text = response.json()[0]['generated_text'].strip()
-        
+        generated_text = response.json()[0]["generated_text"].strip()
+
         # If content is too short, try a follow-up generation
         if len(generated_text.split()) < 300:
             follow_up_prompt = (
@@ -80,20 +96,22 @@ def generate_content_with_huggingface(topic: str, model: str = "google/flan-t5-l
                 "Maintain a positive, informative tone, provide additional details, examples, or applications, "
                 "and align with a tech-savvy personal brand. Avoid jargon and do not include questions or calls-to-action."
             )
-            payload['inputs'] = follow_up_prompt
+            payload["inputs"] = follow_up_prompt
             follow_up_response = requests.post(
-                f'https://api-inference.huggingface.co/models/{model}',
+                f"https://api-inference.huggingface.co/models/{model}",
                 json=payload,
-                headers=headers
+                headers=headers,
             )
             follow_up_response.raise_for_status()
-            follow_up_text = follow_up_response.json()[0]['generated_text'].strip()
+            follow_up_text = follow_up_response.json()[0]["generated_text"].strip()
             generated_text = f"{generated_text} {follow_up_text}"
-        
+
         # Truncate to ~3000 characters to fit LinkedIn's limit
         return generated_text[:3000]
     except requests.exceptions.HTTPError as e:
-        logger.error(f"HTTP Error from Hugging Face API ({model}): {e.response.status_code} - {e.response.text}")
+        logger.error(
+            f"HTTP Error from Hugging Face API ({model}): {e.response.status_code} - {e.response.text}"
+        )
         if model != "t5-small":  # Try fallback model
             logger.info("Switching to fallback model t5-small")
             return generate_content_with_huggingface(topic, model="t5-small")
@@ -115,24 +133,28 @@ def generate_content_with_huggingface(topic: str, model: str = "google/flan-t5-l
             "This trend is poised to influence industries by improving operational workflows and fostering sustainable growth."
         )
 
+
 def create_post() -> Dict:
     """Create a single LinkedIn post."""
-    topic = random.choice(CONFIG['content_topics'])
+    topic = random.choice(CONFIG["content_topics"])
     content = generate_content_with_huggingface(topic)
-    template = random.choice(CONFIG['post_templates'])
+    template = random.choice(CONFIG["post_templates"])
     post_text = template.format(topic=topic, content=content)
     return {
-        'id': str(uuid.uuid4()),
-        'text': post_text,
-        'topic': topic,
-        'created_at': datetime.now().isoformat()
+        "id": str(uuid.uuid4()),
+        "text": post_text,
+        "topic": topic,
+        "created_at": datetime.now().isoformat(),
     }
+
 
 def save_posts_for_review(posts: List[Dict]):
     """Save generated posts to a JSON file for manual review."""
-    file_path = Path(CONFIG['output_dir']) / f'posts_{datetime.now().strftime("%Y%m%d")}.json'
+    file_path = (
+        Path(CONFIG["output_dir"]) / f'posts_{datetime.now().strftime("%Y%m%d")}.json'
+    )
     try:
-        with open(file_path, 'w') as f:
+        with open(file_path, "w") as f:
             json.dump(posts, f, indent=2)
         logger.info(f"Saved {len(posts)} posts to {file_path}")
         return str(file_path)
@@ -140,134 +162,241 @@ def save_posts_for_review(posts: List[Dict]):
         logger.error(f"Error saving posts: {e}")
         return None
 
+
 def post_to_zapier(post: Dict):
     """Send post to Zapier webhook for LinkedIn publishing (optional)."""
     try:
-        zapier_webhook = os.getenv('ZAPIER_WEBHOOK')
+        zapier_webhook = os.getenv("ZAPIER_WEBHOOK")
         if not zapier_webhook:
             logger.error("ZAPIER_WEBHOOK is not set.")
             return
-        payload = {'text': post['text']}
+        payload = {"text": post["text"]}
         response = requests.post(zapier_webhook, json=payload)
         response.raise_for_status()
         logger.info(f"Sent post {post['id']} to Zapier webhook.")
     except Exception as e:
         logger.error(f"Error sending to Zapier: {e}")
 
+
 def load_pending_posts() -> List[Dict]:
     """Load posts from the latest JSON file for review or posting."""
     today = datetime.now().strftime("%Y%m%d")
-    file_path = Path(CONFIG['output_dir']) / f'posts_{today}.json'
+    file_path = Path(CONFIG["output_dir"]) / f"posts_{today}.json"
     try:
-        with open(file_path, 'r') as f:
+        with open(file_path, "r") as f:
             return json.load(f)
     except Exception:
         logger.info("No pending posts found.")
         return []
 
+
 def post_to_linkedin(post_text: str, access_token: str, author_urn: str) -> Dict:
     """Post content directly to LinkedIn using the Posts API."""
     try:
         headers = {
-            'Authorization': f'Bearer {access_token}',
-            'Content-Type': 'application/json',
-            'X-Restli-Protocol-Version': '2.0.0',
-            'LinkedIn-Version': '202508'  # Use current version (YYYYMM)
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+            "X-Restli-Protocol-Version": "2.0.0",
+            "LinkedIn-Version": "202508",  # Use current version (YYYYMM)
         }
+        # payload = {
+        #     'author': author_urn,
+        #     'commentary': post_text,
+        #     'visibility': 'PUBLIC',
+        #     'distribution': {
+        #         'feedDistribution': 'MAIN_FEED',
+        #         'targetEntities': [],
+        #         'thirdPartyDistributionChannels': []
+        #     },
+        #     'lifecycleState': 'PUBLISHED',
+        #     'isReshareDisabledByAuthor': False
+        # }
         payload = {
-            'author': author_urn,
-            'commentary': post_text,
-            'visibility': 'PUBLIC',
-            'distribution': {
-                'feedDistribution': 'MAIN_FEED',
-                'targetEntities': [],
-                'thirdPartyDistributionChannels': []
+            "author": "urn:li:person:8675309",
+            "lifecycleState": "PUBLISHED",
+            "specificContent": {
+                "com.linkedin.ugc.ShareContent": {
+                    "shareCommentary": {
+                        "text": "Hello World! This is my first Share on LinkedIn!"
+                    },
+                    "shareMediaCategory": "NONE",
+                }
             },
-            'lifecycleState': 'PUBLISHED',
-            'isReshareDisabledByAuthor': False
+            "visibility": {"com.linkedin.ugc.MemberNetworkVisibility": "PUBLIC"},
         }
         response = requests.post(
-            'https://api.linkedin.com/rest/posts',
+            # 'https://api.linkedin.com/rest/posts',
+            "https://api.linkedin.com/v2/ugcPosts",
             json=payload,
-            headers=headers
+            headers=headers,
         )
         response.raise_for_status()
-        post_id = response.headers.get('x-restli-id', 'Unknown')
+        post_id = response.headers.get("x-restli-id", "Unknown")
         logger.info(f"Successfully posted to LinkedIn. Post ID: {post_id}")
         return {
-            'status': 'success',
-            'post_id': post_id,
-            'message': 'Post uploaded to LinkedIn'
+            "status": "success",
+            "post_id": post_id,
+            "message": "Post uploaded to LinkedIn",
         }
     except requests.exceptions.HTTPError as e:
-        logger.error(f"HTTP Error from LinkedIn API: {e.response.status_code} - {e.response.text}")
-        raise HTTPException(status_code=e.response.status_code, detail=f"LinkedIn API error: {e.response.text}")
+        logger.error(
+            f"HTTP Error from LinkedIn API: {e.response.status_code} - {e.response.text}"
+        )
+        raise HTTPException(
+            status_code=e.response.status_code,
+            detail=f"LinkedIn API error: {e.response.text}",
+        )
     except Exception as e:
         logger.error(f"Error posting to LinkedIn: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to post to LinkedIn: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to post to LinkedIn: {str(e)}"
+        )
+
 
 @app.post("/generate-posts")
 async def generate_posts():
     """Generate and save posts for the day."""
     ensure_output_dir()
-    posts = [create_post() for _ in range(CONFIG['post_count_per_day'])]
-    
-    if CONFIG['manual_review']:
+    posts = [create_post() for _ in range(CONFIG["post_count_per_day"])]
+
+    if CONFIG["manual_review"]:
         file_path = save_posts_for_review(posts)
         return {
             "message": "Posts generated and saved for review",
             "posts": posts,
-            "file_path": file_path or "Error saving file"
+            "file_path": file_path or "Error saving file",
         }
     else:
         for post in posts:
             post_to_zapier(post)
-        return {
-            "message": "Posts generated and sent to Zapier",
-            "posts": posts
-        }
+        return {"message": "Posts generated and sent to Zapier", "posts": posts}
+
 
 @app.get("/get-pending-posts")
 async def get_pending_posts():
     """Retrieve pending posts for manual review."""
     posts = load_pending_posts()
-    return {
-        "message": "Retrieved pending posts",
-        "posts": posts
-    }
+    return {"message": "Retrieved pending posts", "posts": posts}
+
 
 @app.post("/upload-post")
 async def upload_post(
-    post_id: str = Body(...),
-    access_token: str = Body(...),
-    author_urn: str = Body(...)
+    post_id: str = Body(...), access_token: str = Body(...), author_urn: str = Body(...)
 ):
     """Manually upload a pending post to LinkedIn by post ID."""
     posts = load_pending_posts()
-    post = next((p for p in posts if p['id'] == post_id), None)
+    post = next((p for p in posts if p["id"] == post_id), None)
     if not post:
         raise HTTPException(status_code=404, detail="Post ID not found")
-    
-    result = post_to_linkedin(post['text'], access_token, author_urn)
+
+    result = post_to_linkedin(post["text"], access_token, author_urn)
     return {
-        "message": result['message'],
-        "post_id": result['post_id'],
-        "original_post": post
+        "message": result["message"],
+        "post_id": result["post_id"],
+        "original_post": post,
     }
-    
+
+
+@app.get("/linkedin/authorize")
+async def linkedin_authorize():
+    """Redirect user to LinkedIn authorization URL for 3-legged OAuth."""
+    if not LINKEDIN_CLIENT_ID or not LINKEDIN_REDIRECT_URI:
+        logger.error("LinkedIn client ID or redirect URI not configured.")
+        raise HTTPException(
+            status_code=500, detail="LinkedIn OAuth configuration missing."
+        )
+
+    # Define scopes (adjust based on your needs, e.g., w_member_social for posting)
+    scopes = ["r_basicprofile", "w_member_social"]
+    state = str(uuid.uuid4())  # Generate a unique state to prevent CSRF
+    params = {
+        "response_type": "code",
+        "client_id": LINKEDIN_CLIENT_ID,
+        "redirect_uri": LINKEDIN_REDIRECT_URI,
+        "state": state,
+        "scope": " ".join(scopes),
+    }
+    auth_url = f"https://www.linkedin.com/oauth/v2/authorization?{urlencode(params)}"
+    logger.info(f"Redirecting to LinkedIn authorization URL: {auth_url}")
+    return RedirectResponse(auth_url)
+
+
+@app.get("/linkedin/callback")
+async def linkedin_callback(request: Request):
+    """Handle LinkedIn OAuth callback and exchange code for access token."""
+    code = request.query_params.get("code")
+    state = request.query_params.get("state")
+    error = request.query_params.get("error")
+
+    if error:
+        logger.error(f"LinkedIn OAuth error: {error}")
+        raise HTTPException(status_code=400, detail=f"LinkedIn OAuth error: {error}")
+
+    if not code or not state:
+        logger.error("Missing code or state in LinkedIn callback.")
+        raise HTTPException(status_code=400, detail="Missing code or state parameter.")
+
+    if (
+        not LINKEDIN_CLIENT_ID
+        or not LINKEDIN_CLIENT_SECRET
+        or not LINKEDIN_REDIRECT_URI
+    ):
+        logger.error("LinkedIn OAuth configuration missing.")
+        raise HTTPException(
+            status_code=500, detail="LinkedIn OAuth configuration missing."
+        )
+
+    # Exchange authorization code for access token
+    token_url = "https://www.linkedin.com/oauth/v2/accessToken"
+    headers = {"Content-Type": "application/x-www-form-urlencoded"}
+    data = {
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": LINKEDIN_REDIRECT_URI,
+        "client_id": LINKEDIN_CLIENT_ID,
+        "client_secret": LINKEDIN_CLIENT_SECRET,
+    }
+
+    try:
+        response = requests.post(token_url, headers=headers, data=data)
+        response.raise_for_status()
+        token_data = response.json()
+        access_token = token_data.get("access_token")
+        expires_in = token_data.get("expires_in")
+        logger.info("Successfully fetched LinkedIn access token.")
+        return {
+            "access_token": access_token,
+            "expires_in": expires_in,
+            "message": "Access token retrieved successfully. Use this token with /upload-post endpoint.",
+        }
+    except requests.exceptions.HTTPError as e:
+        logger.error(
+            f"LinkedIn token exchange error: {e.response.status_code} - {e.response.text}"
+        )
+        raise HTTPException(
+            status_code=e.response.status_code,
+            detail=f"LinkedIn API error: {e.response.text}",
+        )
+    except Exception as e:
+        logger.error(f"Unexpected error while exchanging LinkedIn token: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
+
+
 @app.post("/linkedin/token")
 async def get_linkedin_access_token():
     """Fetch LinkedIn access token using client credentials flow"""
     if not LINKEDIN_CLIENT_ID or not LINKEDIN_CLIENT_SECRET:
         logger.error("LinkedIn client ID or secret not configured.")
-        raise HTTPException(status_code=500, detail="LinkedIn credentials not configured.")
+        raise HTTPException(
+            status_code=500, detail="LinkedIn credentials not configured."
+        )
 
     url = "https://www.linkedin.com/oauth/v2/accessToken"
-    headers = {'Content-Type': 'application/x-www-form-urlencoded'}
+    headers = {"Content-Type": "application/x-www-form-urlencoded"}
     data = {
-        'grant_type': 'client_credentials',
-        'client_id': LINKEDIN_CLIENT_ID,
-        'client_secret': LINKEDIN_CLIENT_SECRET
+        "grant_type": "client_credentials",
+        "client_id": LINKEDIN_CLIENT_ID,
+        "client_secret": LINKEDIN_CLIENT_SECRET,
     }
 
     try:
@@ -277,11 +406,16 @@ async def get_linkedin_access_token():
         logger.info("Successfully fetched LinkedIn access token.")
         return {
             "access_token": token_data.get("access_token"),
-            "expires_in": token_data.get("expires_in")
+            "expires_in": token_data.get("expires_in"),
         }
     except requests.exceptions.HTTPError as e:
-        logger.error(f"LinkedIn token fetch error: {e.response.status_code} - {e.response.text}")
-        raise HTTPException(status_code=e.response.status_code, detail=f"LinkedIn API error: {e.response.text}")
+        logger.error(
+            f"LinkedIn token fetch error: {e.response.status_code} - {e.response.text}"
+        )
+        raise HTTPException(
+            status_code=e.response.status_code,
+            detail=f"LinkedIn API error: {e.response.text}",
+        )
     except Exception as e:
         logger.error(f"Unexpected error while fetching LinkedIn token: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
